@@ -1,0 +1,216 @@
+load socket
+load file
+
+fmod CLIENT-INFO is
+    protecting STRING .
+    protecting LEXICAL .
+    protecting META-LEVEL .
+
+    sorts Info ParsedInfo ParseResult .
+    subsort Info < ParsedInfo .
+
+    op account : String -> Info [ctor] .
+    op text : Nat String -> Info [ctor] .
+    op temp : Nat -> Info [ctor] .
+
+    sort Message .
+    op message : Info Nat Info -> Message [ctor] .
+
+    op noInfo : -> ParsedInfo [ctor] .
+
+    op [_,_] : ParsedInfo String -> ParseResult [ctor] .
+
+    vars Str FullStr Pat : String .
+    var Res : FindResult .
+    vars N M : Nat .
+    var C : Char .
+
+    op findUnescaped : String String Nat -> FindResult .
+    eq findUnescaped(Str, Pat, N) = $findUnescaped(find(Str, Pat, N), Str, Pat) .
+    op $findUnescaped : FindResult String String -> FindResult .
+    eq $findUnescaped(notFound, Str, Pat) = notFound .
+    eq $findUnescaped(M, Str, Pat) =
+        if escaped(Str, M) then
+            $findUnescaped(find(Str, Pat, s(M)), Str, Pat)
+        else
+            M
+        fi .
+
+    op escaped : String Nat -> Bool .
+    eq escaped(Str, 0) = false .
+    eq escaped(Str, s(N)) = substr(Str, N, 1) == "\\" .
+
+    op escape : String Char -> String .
+    ceq escape(Str, C) = Str if notFound := find(Str, C, 0) .
+    ceq escape(Str, C) = substr(Str, 0, N) + "\\" + C + escape(substr(Str, s(N), length(Str)), C)
+        if N := find(Str, C, 0) .
+
+    op escape : String -> String .
+    eq escape(Str) = escape(escape(Str, "\\"), "\"") .
+
+    op unescape : String -> String .
+    ceq unescape(Str) = Str if notFound := find(Str, "\\", 0) .
+    ceq unescape(Str) = substr(Str, 0, N) + substr(Str, s(N), 1) + unescape(substr(Str, s(s(N)), length(Str)))
+        if N := find(Str, "\\", 0) .
+
+    op parseInfo : String -> ParseResult .
+    ceq parseInfo(FullStr) =
+        extractInfo(metaParse(['CLIENT-INFO], tokenize(unescape(substr(Str, 0, N))), 'Info),
+                    substr(Str, s(N), length(Str)),
+                    Str)
+        if M := findUnescaped(FullStr, "\"", 0) /\
+           Str := substr(FullStr, s(M), length(FullStr)) /\
+           N := findUnescaped(Str, "\"", 0) .
+    eq parseInfo(Str) = [ noInfo, Str ] [owise] .
+
+    op extractInfo : ResultPair String String -> ParseResult .
+    ceq extractInfo({T:Term, Q:Qid}, Str, FullStr) = [ I:Info, Str ]
+        if I:Info := downTerm(T:Term, noInfo) .
+    ceq extractInfo({T:Term, Q:Qid}, Str, FullStr) = [ noInfo, FullStr ]
+        if noInfo := downTerm(T:Term, noInfo) .
+    eq extractInfo(noParse(N), Str, FullStr) = [ noInfo, FullStr ] .
+endfm
+
+mod MESSAGING is
+    including SOCKET .
+    including STD-STREAM .
+    protecting NAT .
+    protecting STRING .
+    protecting LEXICAL .
+    protecting META-LEVEL .
+    protecting CLIENT-INFO .
+    protecting CONVERSION .
+
+    op client : Nat -> Oid [ctor] .
+    op Client : -> Cid [ctor] .
+
+    op server : -> Oid [ctor] .
+    op Server : -> Cid [ctor] .
+
+    op ticker : -> Oid [ctor] .
+    op Ticker : -> Cid [ctor] .
+
+    op info : Oid Nat Info -> Msg [ctor] .
+    op receiveMessage : Oid Message -> Msg [ctor] .
+
+    sort Messages .
+    subsort Message < Messages .
+    op mt : -> Messages [ctor] .
+    op _;_ : Messages Messages -> Messages [ctor comm assoc id: mt] .
+
+    sort Oids .
+    subsort Oid < Oids .
+    op mt : -> Oids [ctor] .
+    op _;_ : Oids Oids -> Oids [ctor comm assoc id: mt] .
+
+    sort Queue .
+    subsort Nat < Queue .
+    op nil -> Queue [ctor] .
+    op _._ : Queue Queue -> Queue [ctor assoc id: nil] .
+
+    op messages :_ : Messages -> Attribute [ctor] .
+    op clients :_ : Oids -> Attribute [ctor] .
+    op socket :_ : Oid -> Attribute [ctor] .
+    op tick :_ : Nat -> Attribute [ctor] .
+    op data :_ : String -> Attribute [ctor] .
+    op account :_ : Info -> Attribute [ctor] .
+
+    vars N M Time : Nat .
+    vars Msg1 Msg2 : Message .
+    vars Ms1 Ms2 : Messages .
+    vars S C C1 C2 : Oid .
+    vars Os : Oids .
+    vars Addr Name Text OldData Data NewData Data1 Data2 : String .
+    vars Attrs Attrs1 Attrs2 : AttributeSet .
+    var Acc MsgText : Info .
+
+    op startServer : Nat Nat -> Configuration .
+    eq startServer(N, M) =
+        <>
+        < server : Server | messages : mt, clients : mt >
+        < ticker : Ticker | tick : 0 >
+        createServerTcpSocket(socketManager, server, N, M) .
+
+    rl < server : Server | messages : mt, Attrs >
+       createdSocket(server, socketManager, S)
+       => < server : Server | messages : mt, socket : S, Attrs >
+          write(stdout, server, "[INFO] Created socket\n")
+          acceptClient(S, server) .
+
+    rl < ticker : Ticker | tick : N >
+       < server : Server | clients : Os, messages : Ms1, Attrs >
+        acceptedClient(server, S, Addr, C)
+       => acceptClient(S, server)
+          < client(N) : Client | socket : C, data : "" >
+          < ticker : Ticker | tick : s(N) >
+          < server : Server | clients : (client(N) ; Os), messages : Ms1, Attrs >
+          receive(C, client(N))
+          write(stdout, server, "[INFO] Got new client " + string(N, 10) + " from " + Addr + "\n") .
+
+    rl < client(N) : Client | socket : C, data : Data, Attrs >
+        received(client(N), C, NewData)
+        => < client(N) : Client | socket : C, data : (Data + NewData), Attrs >
+           receive(C, client(N))
+           write(stdout, server, "[INFO] Got new data from client " + string(N, 10) + ": \"" + NewData + "\"\n") .
+
+    crl < client(N) : Client | socket : C, data : Data, Attrs >
+        < ticker : Ticker | tick : M >
+        => < client(N) : Client | socket : C, data : NewData, Attrs >
+           info(client(N), M, I:Info)
+           < ticker : Ticker | tick : s(M) >
+           write(stdout, server, "[DEBUG] Client " + string(N, 10) + " parsed data: " + printTokens(metaPrettyPrint(['CLIENT-INFO], upTerm(I:Info))) + "\n")
+        if [ I:Info, NewData ] := parseInfo(Data) .
+
+    rl [set-client-account]:
+        < client(N) : Client | socket : C, data : Data >
+        < server : Server | messages : Ms1, Attrs >
+        info(client(N), M, account(Name))
+        => < client(N) : Client | socket : C, data : Data, account : account(Name) >
+           receiveAllMessages(client(N), Ms1)
+           < server : Server | messages : Ms1, Attrs > .
+
+    rl [send-message]:
+        < server : Server | messages : Ms1, clients : Os, Attrs >
+        < client(N) : Client | account : Acc, Attrs2 >
+        info(client(N), M, MsgText)
+        => < server : Server | messages : (Ms1 ; message(Acc, M, MsgText)), clients : Os, Attrs >
+           < client(N) : Client | account : Acc, Attrs2 >
+           receiveMessages(Os, message(Acc, M, MsgText)) .
+
+    op receiveMessages : Oids Message -> Configuration .
+    eq receiveMessages(mt, Msg1) = none .
+    eq receiveMessages(client(N) ; Os, Msg1) = receiveMessage(client(N), Msg1) receiveMessages(Os, Msg1) .
+
+    op receiveAllMessages : Oids Messages -> Configuration .
+    eq receiveAllMessages(Os, mt) = none .
+    eq receiveAllMessages(Os, Msg1 ; Ms1) = receiveMessages(Os, Msg1) receiveAllMessages(Os, Ms1) .
+
+    op encodeMessage : Message -> String .
+    eq encodeMessage(message(account(Name), M, text(Time, Text))) =
+        "\"text(" + string(Time, 10) + ",\\\"" + escape(escape(Name + ": " + Text), "\\") + "\\\")\"\n" .
+
+    rl [receive-message]:
+        < client(N) : Client | account : Acc, socket : C, Attrs >
+        receiveMessage(client(N), message(Sender:Info, M, MsgText))
+        => < client(N) : Client | account : Acc, socket : C, Attrs >
+           if Acc =/= Sender:Info then
+            send(C, client(N), encodeMessage(message(Sender:Info, M, MsgText)))
+            write(stdout, server, "[DEBUG] Sending message to client " + string(N, 10) + ": " + encodeMessage(message(Sender:Info, M, MsgText)))
+           else
+            none
+           fi .
+
+    rl [client-disconnect]:
+        < client(N) : Client | socket : C, Attrs >
+        < server : Server | clients : (client(N) ; Os), Attrs2 >
+        closedSocket(client(N), C, Data)
+        => < server : Server | clients : Os, Attrs2 >
+           write(stdout, server, "[INFO] Client " + string(N, 10) + " quit: " + Data + "\n") .
+
+    rl sent(C, S) => none .
+
+    rl wrote(server, stdout) => none .
+endm
+
+erew startServer(8080, 5) .
+
