@@ -7,7 +7,11 @@ read -r name
     echo "\"account(\\\"$name\\\")\""
 
     while read -r line; do
-        echo "\"text($(date +"%s"), \\\"$(echo "$line" | sed -E "s/\"/\\\\\\\\\"/g")\\\")\""
+        if [[ "$line" =~ ^\/all ]]; then
+            echo "\"allMessages\""
+        else
+            echo "\"text($(date +"%s"), \\\"$(echo "$line" | sed -E "s/\"/\\\\\\\\\"/g")\\\")\""
+        fi
     done
 ) | netcat localhost 8080 | while read -r line; do
     timestamp="$(echo "$line" | sed -E "s/\"text\(([0-9]+),.*/\1/g")"

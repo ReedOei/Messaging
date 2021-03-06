@@ -14,6 +14,7 @@ fmod CLIENT-INFO is
     op text : Nat String -> Info [ctor] .
     op temp : Nat -> Info [ctor] .
     op debugKill : -> Info [ctor] .
+    op allMessages : -> Info [ctor] .
 
     sort Message .
     subsort Message < Info .
@@ -125,7 +126,7 @@ mod MESSAGING is
     vars S C C1 C2 : Oid .
     vars Addr Name Text OldData Data NewData Data1 Data2 : String .
     vars Attrs Attrs1 Attrs2 : AttributeSet .
-    var Acc MsgText : Info .
+    vars Acc Acc1 Acc2 MsgText : Info .
     vars Ns Ms : Queue .
     var Stat : Status .
 
@@ -190,8 +191,8 @@ mod MESSAGING is
     rl [send-message]:
         < server : Server | messages : Ms1, msgQueue : Ms, accounts : Accs, Attrs >
         < client(N) : Client | account : Acc, Attrs2 >
-        info(client(N), M, MsgText)
-        => < server : Server | messages : (Ms1 ; message(Acc, M, MsgText)), msgQueue : (Ms . M), accounts : Accs, Attrs >
+        info(client(N), M, text(Time, Text))
+        => < server : Server | messages : (Ms1 ; message(Acc, M, text(Time, Text))), msgQueue : (Ms . M), accounts : Accs, Attrs >
            < client(N) : Client | account : Acc, Attrs2 >
            enqueueMessage(Accs, M) .
 
@@ -208,25 +209,28 @@ mod MESSAGING is
     eq encodeMessage(message(account(N, Name), M, text(Time, Text))) =
         "\"text(" + string(Time, 10) + ",\\\"" + escape(escape(Name + ": " + Text), "\\") + "\\\")\"\n" .
 
-    op requestMessage : Oid Nat -> Msg [ctor] .
-
-    rl [request-message]:
-        < client(N) : Client | account : Acc, socket : C, msgQueue : (M . Ms), status : idle, Attrs  >
-        => < client(N) : Client | account : Acc, socket : C, msgQueue : (M . Ms), status : receiving, Attrs >
-           requestMessage(client(N), M) .
+    rl [request-all-messages]:
+        < client(N) : Client | msgQueue : Ms, Attrs  >
+        < server : Server | msgQueue : Ns, Attrs2 >
+        info(client(N), M, allMessages)
+        => < client(N) : Client | msgQueue : (Ms . Ns), Attrs >
+           < server : Server | msgQueue : Ns, Attrs2 > .
 
     rl [receive-message]:
-        < client(N) : Client | account : Acc, socket : C, msgQueue : (M . Ms), status : receiving, Attrs  >
+        < client(N) : Client | account : Acc, socket : C, msgQueue : (M . Ms), status : idle, Attrs  >
         < server : Server | messages : (Ms1 ; message(Sender:Info, M, MsgText)), Attrs2 >
-        requestMessage(client(N), M)
        => < server : Server | messages : (Ms1 ; message(Sender:Info, M, MsgText)), Attrs2 >
-           if Acc =/= Sender:Info then
+           if not fromMe(Acc, Sender:Info) then
             < client(N) : Client | account : Acc, socket : C, msgQueue : (M . Ms), status : receiving, Attrs >
             send(C, client(N), encodeMessage(message(Sender:Info, M, MsgText)))
             write(stdout, server, "[DEBUG] Sending message to client " + string(N, 10) + ": " + encodeMessage(message(Sender:Info, M, MsgText)))
            else
             < client(N) : Client | account : Acc, socket : C, msgQueue : Ms, status : idle, Attrs  >
            fi .
+
+    op fromMe : Info Info -> Bool .
+    eq fromMe(account(N, Name), account(M, Name)) = true .
+    eq fromMe(Acc1, Acc2) = false [owise] .
 
     rl < client(N) : Client | socket : C, status : receiving, msgQueue : (M . Ms), Attrs >
        sent(client(N), C)
