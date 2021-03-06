@@ -10,11 +10,19 @@ fmod CLIENT-INFO is
     subsort Info < ParsedInfo .
 
     op account : String -> Info [ctor] .
+    op account : Nat String -> Info [ctor] .
     op text : Nat String -> Info [ctor] .
     op temp : Nat -> Info [ctor] .
+    op debugKill : -> Info [ctor] .
 
     sort Message .
+    subsort Message < Info .
     op message : Info Nat Info -> Message [ctor] .
+
+    sort Infos .
+    subsort Info < Infos .
+    op mt : -> Infos [ctor] .
+    op _;_ : Infos Infos -> Infos [ctor comm assoc id: mt] .
 
     op noInfo : -> ParsedInfo [ctor] .
 
@@ -93,121 +101,142 @@ mod MESSAGING is
     op info : Oid Nat Info -> Msg [ctor] .
     op receiveMessage : Oid Message -> Msg [ctor] .
 
-    sort Messages .
-    subsort Message < Messages .
-    op mt : -> Messages [ctor] .
-    op _;_ : Messages Messages -> Messages [ctor comm assoc id: mt] .
-
-    sort Oids .
-    subsort Oid < Oids .
-    op mt : -> Oids [ctor] .
-    op _;_ : Oids Oids -> Oids [ctor comm assoc id: mt] .
-
     sort Queue .
     subsort Nat < Queue .
-    op nil -> Queue [ctor] .
-    op _._ : Queue Queue -> Queue [ctor assoc id: nil] .
+    op nq : -> Queue [ctor] .
+    op _._ : Queue Queue -> Queue [ctor assoc id: nq] .
 
-    op messages :_ : Messages -> Attribute [ctor] .
-    op clients :_ : Oids -> Attribute [ctor] .
+    sort Status .
+    ops sending receiving idle : -> Status [ctor] .
+
+    op messages :_ : Infos -> Attribute [ctor] .
+    op accounts :_ : Infos -> Attribute [ctor] .
     op socket :_ : Oid -> Attribute [ctor] .
     op tick :_ : Nat -> Attribute [ctor] .
     op data :_ : String -> Attribute [ctor] .
     op account :_ : Info -> Attribute [ctor] .
+    op msgQueue :_ : Queue -> Attribute [ctor] .
+    op status :_ : Status -> Attribute [ctor] .
 
-    vars N M Time : Nat .
+    vars N M Tick Time : Nat .
     vars Msg1 Msg2 : Message .
-    vars Ms1 Ms2 : Messages .
+    vars Ms1 Ms2 : Infos .
+    vars Accs : Infos .
     vars S C C1 C2 : Oid .
-    vars Os : Oids .
     vars Addr Name Text OldData Data NewData Data1 Data2 : String .
     vars Attrs Attrs1 Attrs2 : AttributeSet .
     var Acc MsgText : Info .
+    vars Ns Ms : Queue .
+    var Stat : Status .
 
     op startServer : Nat Nat -> Configuration .
     eq startServer(N, M) =
-        <>
-        < server : Server | messages : mt, clients : mt >
-        < ticker : Ticker | tick : 0 >
+        <> --- "Portal" must be here.
+        < server : Server | messages : mt, accounts : mt, msgQueue : nq >
+        < ticker : Ticker | tick : 1 >
         createServerTcpSocket(socketManager, server, N, M) .
 
-    rl < server : Server | messages : mt, Attrs >
+    rl < server : Server | Attrs >
        createdSocket(server, socketManager, S)
-       => < server : Server | messages : mt, socket : S, Attrs >
+       => < server : Server | socket : S, Attrs >
           write(stdout, server, "[INFO] Created socket\n")
           acceptClient(S, server) .
 
-    rl < ticker : Ticker | tick : N >
-       < server : Server | clients : Os, messages : Ms1, Attrs >
-        acceptedClient(server, S, Addr, C)
+    --- rl acceptClient(S, server) info(client(N), M, debugKill) => none .
+
+    rl [new-client]:
+       < ticker : Ticker | tick : N >
+       acceptedClient(server, S, Addr, C)
        => acceptClient(S, server)
-          < client(N) : Client | socket : C, data : "" >
+          < client(N) : Client | socket : C, data : "", msgQueue : nq, status : idle >
           < ticker : Ticker | tick : s(N) >
-          < server : Server | clients : (client(N) ; Os), messages : Ms1, Attrs >
           receive(C, client(N))
-          write(stdout, server, "[INFO] Got new client " + string(N, 10) + " from " + Addr + "\n") .
+          write(stdout, server, "[INFO] New client " + string(N, 10) + " from " + Addr + "\n") .
 
     rl < client(N) : Client | socket : C, data : Data, Attrs >
         received(client(N), C, NewData)
         => < client(N) : Client | socket : C, data : (Data + NewData), Attrs >
-           receive(C, client(N))
-           write(stdout, server, "[INFO] Got new data from client " + string(N, 10) + ": \"" + NewData + "\"\n") .
+           receive(C, client(N)) .
+           --- write(stdout, server, "[INFO] Got new data from client " + string(N, 10) + ": \"" + NewData + "\"\n") .
 
     crl < client(N) : Client | socket : C, data : Data, Attrs >
         < ticker : Ticker | tick : M >
         => < client(N) : Client | socket : C, data : NewData, Attrs >
-           info(client(N), M, I:Info)
            < ticker : Ticker | tick : s(M) >
+           info(client(N), M, I:Info)
            write(stdout, server, "[DEBUG] Client " + string(N, 10) + " parsed data: " + printTokens(metaPrettyPrint(['CLIENT-INFO], upTerm(I:Info))) + "\n")
         if [ I:Info, NewData ] := parseInfo(Data) .
 
-    rl [set-client-account]:
-        < client(N) : Client | socket : C, data : Data >
-        < server : Server | messages : Ms1, Attrs >
+    rl [connect-client-account]:
+        < client(N) : Client | socket : C, Attrs1 >
+        < client(M) : Client | account : account(M, Name), status : Stat, Attrs2 >
+        < server : Server | accounts : (account(M, Name) ; Accs), Attrs >
+        info(client(N), Tick, account(Name))
+        => < client(N) : Client | socket : C, account : account(N, Name), status : idle, Attrs2 >
+           < server : Server | accounts : (account(N, Name) ; Accs), Attrs > .
+
+    crl [new-client-account]:
+        < client(N) : Client | socket : C, msgQueue : Ns, Attrs1 >
+        < server : Server | accounts : Accs, msgQueue : Ms, Attrs >
         info(client(N), M, account(Name))
-        => < client(N) : Client | socket : C, data : Data, account : account(Name) >
-           receiveAllMessages(client(N), Ms1)
-           < server : Server | messages : Ms1, Attrs > .
+        => < client(N) : Client | socket : C, account : account(N, Name), msgQueue : (Ns . Ms), Attrs1 >
+           < server : Server | accounts : (account(N, Name) ; Accs), msgQueue : Ms, Attrs >
+        if newAccount(Name, Accs) .
+
+    op newAccount : String Infos -> Bool .
+    eq newAccount(Name, account(M, Name) ; Accs) = false .
+    eq newAccount(Name, Accs) = true [owise] .
 
     rl [send-message]:
-        < server : Server | messages : Ms1, clients : Os, Attrs >
+        < server : Server | messages : Ms1, msgQueue : Ms, accounts : Accs, Attrs >
         < client(N) : Client | account : Acc, Attrs2 >
         info(client(N), M, MsgText)
-        => < server : Server | messages : (Ms1 ; message(Acc, M, MsgText)), clients : Os, Attrs >
+        => < server : Server | messages : (Ms1 ; message(Acc, M, MsgText)), msgQueue : (Ms . M), accounts : Accs, Attrs >
            < client(N) : Client | account : Acc, Attrs2 >
-           receiveMessages(Os, message(Acc, M, MsgText)) .
+           enqueueMessage(Accs, M) .
 
-    op receiveMessages : Oids Message -> Configuration .
-    eq receiveMessages(mt, Msg1) = none .
-    eq receiveMessages(client(N) ; Os, Msg1) = receiveMessage(client(N), Msg1) receiveMessages(Os, Msg1) .
-
-    op receiveAllMessages : Oids Messages -> Configuration .
-    eq receiveAllMessages(Os, mt) = none .
-    eq receiveAllMessages(Os, Msg1 ; Ms1) = receiveMessages(Os, Msg1) receiveAllMessages(Os, Ms1) .
+    op enqueueMessage : Infos Nat -> Msg [ctor] .
+    rl [done-enqueue]: enqueueMessage(mt, M) => none .
+    rl [enqueue-message] :
+        < client(N) : Client | msgQueue : Ms, Attrs >
+        enqueueMessage(account(N, Name) ; Accs, M)
+        =>
+        < client(N) : Client | msgQueue : (Ms . M), Attrs >
+        enqueueMessage(Accs, M) .
 
     op encodeMessage : Message -> String .
-    eq encodeMessage(message(account(Name), M, text(Time, Text))) =
+    eq encodeMessage(message(account(N, Name), M, text(Time, Text))) =
         "\"text(" + string(Time, 10) + ",\\\"" + escape(escape(Name + ": " + Text), "\\") + "\\\")\"\n" .
 
+    op requestMessage : Oid Nat -> Msg [ctor] .
+
+    rl [request-message]:
+        < client(N) : Client | account : Acc, socket : C, msgQueue : (M . Ms), status : idle, Attrs  >
+        => < client(N) : Client | account : Acc, socket : C, msgQueue : (M . Ms), status : receiving, Attrs >
+           requestMessage(client(N), M) .
+
     rl [receive-message]:
-        < client(N) : Client | account : Acc, socket : C, Attrs >
-        receiveMessage(client(N), message(Sender:Info, M, MsgText))
-        => < client(N) : Client | account : Acc, socket : C, Attrs >
+        < client(N) : Client | account : Acc, socket : C, msgQueue : (M . Ms), status : receiving, Attrs  >
+        < server : Server | messages : (Ms1 ; message(Sender:Info, M, MsgText)), Attrs2 >
+        requestMessage(client(N), M)
+       => < server : Server | messages : (Ms1 ; message(Sender:Info, M, MsgText)), Attrs2 >
            if Acc =/= Sender:Info then
+            < client(N) : Client | account : Acc, socket : C, msgQueue : (M . Ms), status : receiving, Attrs >
             send(C, client(N), encodeMessage(message(Sender:Info, M, MsgText)))
             write(stdout, server, "[DEBUG] Sending message to client " + string(N, 10) + ": " + encodeMessage(message(Sender:Info, M, MsgText)))
            else
-            none
+            < client(N) : Client | account : Acc, socket : C, msgQueue : Ms, status : idle, Attrs  >
            fi .
+
+    rl < client(N) : Client | socket : C, status : receiving, msgQueue : (M . Ms), Attrs >
+       sent(client(N), C)
+       =>  < client(N) : Client | socket : C, status : idle, msgQueue : Ms, Attrs > .
 
     rl [client-disconnect]:
         < client(N) : Client | socket : C, Attrs >
-        < server : Server | clients : (client(N) ; Os), Attrs2 >
         closedSocket(client(N), C, Data)
-        => < server : Server | clients : Os, Attrs2 >
-           write(stdout, server, "[INFO] Client " + string(N, 10) + " quit: " + Data + "\n") .
-
-    rl sent(C, S) => none .
+        => < client(N) : Client | Attrs >
+           write(stdout, server, "[INFO] Client " + string(N, 10) + " quit, reason: '" + Data + "'\n") .
 
     rl wrote(server, stdout) => none .
 endm
