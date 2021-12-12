@@ -12,9 +12,9 @@ fmod CLIENT-INFO is
     op account : String -> Info [ctor] .
     op account : Nat String -> Info [ctor] .
     op text : Nat String -> Info [ctor] .
-    op temp : Nat -> Info [ctor] .
-    op debugKill : -> Info [ctor] .
     op allMessages : -> Info [ctor] .
+    op replyTo : Nat Nat String -> Info [ctor] .
+    op thread : Info Nat String -> Info [ctor] .
 
     sort Message .
     subsort Message < Info .
@@ -87,8 +87,9 @@ mod MESSAGING is
     protecting STRING .
     protecting LEXICAL .
     protecting META-LEVEL .
-    protecting CLIENT-INFO .
     protecting CONVERSION .
+
+    protecting CLIENT-INFO .
 
     op client : Nat -> Oid [ctor] .
     op Client : -> Cid [ctor] .
@@ -119,14 +120,14 @@ mod MESSAGING is
     op msgQueue :_ : Queue -> Attribute [ctor] .
     op status :_ : Status -> Attribute [ctor] .
 
-    vars N M Tick Time : Nat .
+    vars N M Tick Time Id : Nat .
     vars Msg1 Msg2 : Message .
     vars Ms1 Ms2 : Infos .
     vars Accs : Infos .
     vars S C C1 C2 : Oid .
     vars Addr Name Text OldData Data NewData Data1 Data2 : String .
     vars Attrs Attrs1 Attrs2 : AttributeSet .
-    vars Acc Acc1 Acc2 MsgText : Info .
+    vars Acc Acc1 Acc2 MsgInfo Parent : Info .
     vars Ns Ms : Queue .
     var Stat : Status .
 
@@ -160,7 +161,8 @@ mod MESSAGING is
            receive(C, client(N)) .
            --- write(stdout, server, "[INFO] Got new data from client " + string(N, 10) + ": \"" + NewData + "\"\n") .
 
-    crl < client(N) : Client | socket : C, data : Data, Attrs >
+    crl [parse-data]:
+        < client(N) : Client | socket : C, data : Data, Attrs >
         < ticker : Ticker | tick : M >
         => < client(N) : Client | socket : C, data : NewData, Attrs >
            < ticker : Ticker | tick : s(M) >
@@ -196,6 +198,14 @@ mod MESSAGING is
            < client(N) : Client | account : Acc, Attrs2 >
            enqueueMessage(Accs, M) .
 
+    rl [reply-message]:
+        < server : Server | messages : Ms1, msgQueue : Ms, accounts : Accs, Attrs >
+        < client(N) : Client | account : Acc, Attrs2 >
+        info(client(N), M, replyTo(Id, Time, Text))
+        => < server : Server | messages : (Ms1 ; message(Acc, M, replyTo(Id, Time, Text))), msgQueue : (Ms . M), accounts : Accs, Attrs >
+           < client(N) : Client | account : Acc, Attrs2 >
+           enqueueMessage(Accs, M) .
+
     op enqueueMessage : Infos Nat -> Msg [ctor] .
     rl [done-enqueue]: enqueueMessage(mt, M) => none .
     rl [enqueue-message] :
@@ -205,9 +215,16 @@ mod MESSAGING is
         < client(N) : Client | msgQueue : (Ms . M), Attrs >
         enqueueMessage(Accs, M) .
 
-    op encodeMessage : Message -> String .
-    eq encodeMessage(message(account(N, Name), M, text(Time, Text))) =
-        "\"text(" + string(Time, 10) + ",\\\"" + escape(escape(Name + ": " + Text), "\\") + "\\\")\"\n" .
+    op formatMessage : Message -> String .
+    eq formatMessage(message(account(N, Name), M, text(Time, Text))) =
+        "text(" + string(Time, 10) + ",\\\"" + escape(escape(Name + ": " + Text), "\\") + "\\\")" .
+    eq formatMessage(message(account(N, Name), M, thread(Parent, Time, Text))) =
+        "thread(" + formatMessage(message(account(N, Name), M, Parent)) + "," + string(Time, 10) + ",\\\"" + escape(escape(Name + ": " + Text), "\\") + "\\\")" .
+
+    op buildMessage : Infos Info -> Info .
+    eq buildMessage(Ms1, text(Time, Text)) = text(Time, Text) .
+    eq buildMessage((message(Acc, Id, MsgInfo) ; Ms1), replyTo(Id, Time, Text)) =
+        thread(buildMessage(Ms1, MsgInfo), Time, Text) .
 
     rl [request-all-messages]:
         < client(N) : Client | msgQueue : Ms, Attrs  >
@@ -218,12 +235,12 @@ mod MESSAGING is
 
     rl [receive-message]:
         < client(N) : Client | account : Acc, socket : C, msgQueue : (M . Ms), status : idle, Attrs  >
-        < server : Server | messages : (Ms1 ; message(Sender:Info, M, MsgText)), Attrs2 >
-       => < server : Server | messages : (Ms1 ; message(Sender:Info, M, MsgText)), Attrs2 >
+        < server : Server | messages : (Ms1 ; message(Sender:Info, M, MsgInfo)), Attrs2 >
+       => < server : Server | messages : (Ms1 ; message(Sender:Info, M, MsgInfo)), Attrs2 >
            if not fromMe(Acc, Sender:Info) then
             < client(N) : Client | account : Acc, socket : C, msgQueue : (M . Ms), status : receiving, Attrs >
-            send(C, client(N), encodeMessage(message(Sender:Info, M, MsgText)))
-            write(stdout, server, "[DEBUG] Sending message to client " + string(N, 10) + ": " + encodeMessage(message(Sender:Info, M, MsgText)))
+            send(C, client(N), "\"" + formatMessage(message(Sender:Info, M, buildMessage(Ms1, MsgInfo))) + "\"\n")
+            write(stdout, server, "[DEBUG] Sending message (id: " + string(M, 10) + ") to client " + string(N, 10) + ": " + "\"" + formatMessage(message(Sender:Info, M, buildMessage(Ms1, MsgInfo))) + "\"\n")
            else
             < client(N) : Client | account : Acc, socket : C, msgQueue : Ms, status : idle, Attrs  >
            fi .
