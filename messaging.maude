@@ -15,6 +15,7 @@ fmod CLIENT-INFO is
     op allMessages : -> Info [ctor] .
     op replyTo : Nat Nat String -> Info [ctor] .
     op thread : Info Nat String -> Info [ctor] .
+    op save : -> Info [ctor] .
 
     sort Message .
     subsort Message < Info .
@@ -88,17 +89,18 @@ mod MESSAGING is
     protecting LEXICAL .
     protecting META-LEVEL .
     protecting CONVERSION .
+    protecting FILE .
 
     protecting CLIENT-INFO .
 
     op client : Nat -> Oid [ctor] .
     op Client : -> Cid [ctor] .
 
+    op db : Nat -> Oid [ctor] .
+    op Database : -> Cid [ctor] .
+
     op server : -> Oid [ctor] .
     op Server : -> Cid [ctor] .
-
-    op ticker : -> Oid [ctor] .
-    op Ticker : -> Cid [ctor] .
 
     op info : Oid Nat Info -> Msg [ctor] .
     op receiveMessage : Oid Message -> Msg [ctor] .
@@ -119,12 +121,14 @@ mod MESSAGING is
     op account :_ : Info -> Attribute [ctor] .
     op msgQueue :_ : Queue -> Attribute [ctor] .
     op status :_ : Status -> Attribute [ctor] .
+    op file :_ : Oid -> Attribute [ctor] .
+    op serverState :_ : Object -> Attribute [ctor] .
 
     vars N M Tick Time Id : Nat .
     vars Msg1 Msg2 : Message .
     vars Ms1 Ms2 : Infos .
     vars Accs : Infos .
-    vars S C C1 C2 : Oid .
+    vars S C C1 C2 File : Oid .
     vars Addr Name Text OldData Data NewData Data1 Data2 : String .
     vars Attrs Attrs1 Attrs2 : AttributeSet .
     vars Acc Acc1 Acc2 MsgInfo Parent : Info .
@@ -134,8 +138,7 @@ mod MESSAGING is
     op startServer : Nat Nat -> Configuration .
     eq startServer(N, M) =
         <> --- "Portal" must be here.
-        < server : Server | messages : mt, accounts : mt, msgQueue : nq >
-        < ticker : Ticker | tick : 1 >
+        < server : Server | messages : mt, accounts : mt, msgQueue : nq, tick : 1 >
         createServerTcpSocket(socketManager, server, N, M) .
 
     rl < server : Server | Attrs >
@@ -147,11 +150,11 @@ mod MESSAGING is
     --- rl acceptClient(S, server) info(client(N), M, debugKill) => none .
 
     rl [new-client]:
-       < ticker : Ticker | tick : N >
+       < server : Server | tick : N, Attrs >
        acceptedClient(server, S, Addr, C)
        => acceptClient(S, server)
           < client(N) : Client | socket : C, data : "", msgQueue : nq, status : idle >
-          < ticker : Ticker | tick : s(N) >
+          < server : Server | tick : s(N), Attrs >
           receive(C, client(N))
           write(stdout, server, "[INFO] New client " + string(N, 10) + " from " + Addr + "\n") .
 
@@ -163,9 +166,9 @@ mod MESSAGING is
 
     crl [parse-data]:
         < client(N) : Client | socket : C, data : Data, Attrs >
-        < ticker : Ticker | tick : M >
+        < server : Server | tick : M, Attrs2 >
         => < client(N) : Client | socket : C, data : NewData, Attrs >
-           < ticker : Ticker | tick : s(M) >
+           < server : Server | tick : s(M), Attrs2 >
            info(client(N), M, I:Info)
            write(stdout, server, "[DEBUG] Client " + string(N, 10) + " parsed data: " + printTokens(metaPrettyPrint(['CLIENT-INFO], upTerm(I:Info))) + "\n")
         if [ I:Info, NewData ] := parseInfo(Data) .
@@ -189,6 +192,31 @@ mod MESSAGING is
     op newAccount : String Infos -> Bool .
     eq newAccount(Name, account(M, Name) ; Accs) = false .
     eq newAccount(Name, Accs) = true [owise] .
+
+    -----------------------------------------------------------------------------------------
+    --- Saving to database
+    -----------------------------------------------------------------------------------------
+    rl [save]:
+        < server : Server | tick : Tick, Attrs >
+        info(client(N), M, save)
+        => < server : Server | tick : s(Tick), Attrs >
+           < db(Tick) : Database | serverState : < server : Server | tick : Tick, Attrs > >
+           openFile(fileManager, db(Tick), "db.txt", "w") .
+
+    rl [save-to-db]:
+        < db(Tick) : Database | serverState : < server : Server | Attrs > >
+        openedFile(db(Tick), fileManager, File)
+        => < db(Tick) : Database | serverState : < server : Server | Attrs > >
+           write(File, db(Tick), printTokens(metaPrettyPrint(['MESSAGING], upTerm(< server : Server | Attrs >))) + "\n") .
+
+    rl [close-database]:
+        wrote(db(Tick), File)
+        => closeFile(File, db(Tick)) .
+
+    rl [done-database]:
+        < db(Tick) : Database | serverState : < server : Server | Attrs > >
+        closedFile(db(Tick), File)
+        => none .
 
     rl [send-message]:
         < server : Server | messages : Ms1, msgQueue : Ms, accounts : Accs, Attrs >

@@ -13,6 +13,8 @@ read -r name
             msg_id="$(echo "$line" | cut -f2 -d":")"
             msg="$(echo "$line" | sed -E "s/^\/re[^:]*:[0-9]+:(.*)+/\1/g")"
             echo "\"replyTo($msg_id, $(date +"%s"), \\\"$(echo "$msg" | sed -E "s/\"/\\\\\\\\\"/g")\\\")\""
+        elif [[ "$line" =~ ^\/save ]]; then
+            echo "\"save\""
         else
             echo "\"text($(date +"%s"), \\\"$(echo "$line" | sed -E "s/\"/\\\\\\\\\"/g")\\\")\""
         fi
