@@ -112,6 +112,7 @@ mod MESSAGING is
 
     sort Status .
     ops sending receiving idle : -> Status [ctor] .
+    ops saving loading : -> Status [ctor] .
 
     op messages :_ : Infos -> Attribute [ctor] .
     op accounts :_ : Infos -> Attribute [ctor] .
@@ -123,13 +124,15 @@ mod MESSAGING is
     op status :_ : Status -> Attribute [ctor] .
     op file :_ : Oid -> Attribute [ctor] .
     op serverState :_ : Object -> Attribute [ctor] .
+    op port :_ : Nat -> Attribute [ctor] .
+    op numClients :_ : Nat -> Attribute [ctor] .
 
     vars N M Tick Time Id : Nat .
     vars Msg1 Msg2 : Message .
     vars Ms1 Ms2 : Infos .
     vars Accs : Infos .
     vars S C C1 C2 File : Oid .
-    vars Addr Name Text OldData Data NewData Data1 Data2 : String .
+    vars Reason Addr Name Text OldData Data NewData Data1 Data2 : String .
     vars Attrs Attrs1 Attrs2 : AttributeSet .
     vars Acc Acc1 Acc2 MsgInfo Parent : Info .
     vars Ns Ms : Queue .
@@ -138,8 +141,9 @@ mod MESSAGING is
     op startServer : Nat Nat -> Configuration .
     eq startServer(N, M) =
         <> --- "Portal" must be here.
-        < server : Server | messages : mt, accounts : mt, msgQueue : nq, tick : 1 >
-        createServerTcpSocket(socketManager, server, N, M) .
+        < db(0) : Database | status : loading, port : N, numClients : M > .
+        --- < server : Server | messages : mt, accounts : mt, msgQueue : nq, tick : 1 >
+        --- createServerTcpSocket(socketManager, server, N, M) .
 
     rl < server : Server | Attrs >
        createdSocket(server, socketManager, S)
@@ -194,17 +198,66 @@ mod MESSAGING is
     eq newAccount(Name, Accs) = true [owise] .
 
     -----------------------------------------------------------------------------------------
+    --- Loading from database
+    -----------------------------------------------------------------------------------------
+    rl [load]:
+        < db(Tick) : Database | port : N, numClients : M, status : loading >
+        => < db(Tick) : Database | port : N, numClients : M >
+           openFile(fileManager, db(Tick), "db.txt", "r") .
+
+    rl [db-no-exist]:
+        < db(Tick) : Database | port : N, numClients : M >
+        fileError(db(Tick), fileManager, Reason)
+        => write(stdout, db(Tick), "Could not load database: " + Reason) .
+
+    rl [load-from-db]:
+        < db(Tick) : Database | port : N, numClients : M >
+        openedFile(db(Tick), fileManager, File)
+        => < db(Tick) : Database | port : N, numClients : M, file : File >
+           getLine(File, db(Tick)) .
+
+    rl [load-db-data]:
+        < db(Tick) : Database | port : N, numClients : M, file : File >
+        gotLine(db(Tick), File, Data)
+        => < db(Tick) : Database | port : N, numClients : M, file : File, data : Data > .
+
+    crl [load-db-parse]:
+        < db(Tick) : Database | port : N, numClients : M, file : File, data : Data >
+        => < db(Tick) : Database | port : N, numClients : M, file : File, data : Data, serverState : < server : Server | Attrs > >
+           closeFile(File, db(Tick))
+        if {T:Term, Q:Qid} := metaParse(['MESSAGING], tokenize(Data), 'Object) /\
+           < server : Server | Attrs > := downTerm(T:Term, < server : Server | status : idle >) /\
+           Attrs =/= status : idle .
+
+    crl [load-db-bad-meta-parse]:
+        < db(Tick) : Database | port : N, numClients : M, file : File, data : Data >
+        => write(stdout, db(Tick), "Could not parse data from database: " + Data)
+        if noParse(_:Nat) := metaParse(['MESSAGING], tokenize(Data), 'Object) .
+
+    crl [load-db-bad-down-term-parse]:
+        < db(Tick) : Database | port : N, numClients : M, file : File, data : Data >
+        => write(stdout, db(Tick), "Could not parse data from database: " + Data)
+        if {T:Term, Q:Qid} := metaParse(['MESSAGING], tokenize(Data), 'Object) /\
+           < server : Server | status : idle > := downTerm(T:Term, < server : Server | status : idle >) .
+
+    rl [load-close-db]:
+        < db(Tick) : Database | port : N, numClients : M, file : File, data : Data, serverState : < server : Server | socket : S, Attrs > >
+        closedFile(db(Tick), File)
+        => < server : Server | Attrs >
+           createServerTcpSocket(socketManager, server, N, M) .
+
+    -----------------------------------------------------------------------------------------
     --- Saving to database
     -----------------------------------------------------------------------------------------
     rl [save]:
         < server : Server | tick : Tick, Attrs >
         info(client(N), M, save)
         => < server : Server | tick : s(Tick), Attrs >
-           < db(Tick) : Database | serverState : < server : Server | tick : Tick, Attrs > >
+           < db(Tick) : Database | status : saving, serverState : < server : Server | tick : Tick, Attrs > >
            openFile(fileManager, db(Tick), "db.txt", "w") .
 
     rl [save-to-db]:
-        < db(Tick) : Database | serverState : < server : Server | Attrs > >
+        < db(Tick) : Database | status : saving, serverState : < server : Server | Attrs > >
         openedFile(db(Tick), fileManager, File)
         => < db(Tick) : Database | serverState : < server : Server | Attrs > >
            write(File, db(Tick), printTokens(metaPrettyPrint(['MESSAGING], upTerm(< server : Server | Attrs >))) + "\n") .
@@ -214,7 +267,7 @@ mod MESSAGING is
         => closeFile(File, db(Tick)) .
 
     rl [done-database]:
-        < db(Tick) : Database | serverState : < server : Server | Attrs > >
+        < db(Tick) : Database | status : saving, serverState : < server : Server | Attrs > >
         closedFile(db(Tick), File)
         => none .
 
